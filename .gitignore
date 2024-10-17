@@ -163,3 +163,5 @@ cython_debug/
 
 .DS_Store
 public_data/
+*.zip
+notebooks/pred*.csv

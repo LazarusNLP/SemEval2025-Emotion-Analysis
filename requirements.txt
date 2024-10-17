@@ -1,0 +1,7 @@
+accelerate
+transformers
+datasets
+tokenizers
+scikit-learn
+pandas
+tensorboardX
