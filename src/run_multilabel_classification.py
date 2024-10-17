@@ -21,9 +21,11 @@ args.add_argument("--test_file", type=str, default="public_data/dev/track_a/sun_
 args.add_argument("--model_checkpoint", type=str, default="LazarusNLP/NusaBERT-base")
 args.add_argument("--output_dir", type=str, default="models")
 args.add_argument("--num_train_epochs", type=int, default=50)
+args.add_argument("--optim", type=str, default="adamw_torch")
 args.add_argument("--early_stopping_patience", type=int, default=5)
 args.add_argument("--early_stopping_threshold", type=float, default=0.0)
 args.add_argument("--learning_rate", type=float, default=1e-5)
+args.add_argument("--warmup_ratio", type=float, default=0.1)
 args.add_argument("--weight_decay", type=float, default=0.01)
 args.add_argument("--per_device_train_batch_size", type=int, default=8)
 args.add_argument("--per_device_eval_batch_size", type=int, default=16)
@@ -60,9 +62,9 @@ def main(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
 
     def preprocess_function(example):
-        example = tokenizer(example["text"], truncation=True, max_length=model.config.max_position_embeddings)
-        example["labels"] = [float(example[label]) for label in labels]
-        return example
+        tokenized_input = tokenizer(example["text"], truncation=True, max_length=model.config.max_position_embeddings)
+        tokenized_input["labels"] = [float(example[label]) for label in labels]
+        return tokenized_input
 
     tokenized_dataset = dataset.map(preprocess_function, remove_columns=dataset["train"].column_names)
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
@@ -80,6 +82,7 @@ def main(args):
     callbacks = [EarlyStoppingCallback(args.early_stopping_patience, args.early_stopping_threshold)]
 
     output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
     output_dir = output_dir / f"{args.model_checkpoint.split('/')[-1]}-SemEval-sun"
 
     training_args = TrainingArguments(
@@ -89,6 +92,8 @@ def main(args):
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         learning_rate=args.learning_rate,
+        warmup_ratio=args.warmup_ratio,
+        optim=args.optim,
         weight_decay=args.weight_decay,
         num_train_epochs=args.num_train_epochs,
         save_total_limit=3,
@@ -114,6 +119,7 @@ def main(args):
     )
 
     trainer.train()
+    trainer.create_model_card()
 
     val_scores, *_ = trainer.predict(tokenized_dataset["validation"])
     val_scores = sigmoid(val_scores)
@@ -128,13 +134,14 @@ def main(args):
         metrics_result = f1_score(y_true=val_labels, y_pred=val_prediction, average="macro")
         scores.append((threshold, metrics_result))
 
-    best_threshold, _ = max(scores, key=lambda x: x[1])
+    best_threshold, best_score = max(scores, key=lambda x: x[1])
+    print(f"Best threshold: {best_threshold}, Best score: {best_score}")
     predictions, *_ = trainer.predict(tokenized_dataset["test"])
     predictions = sigmoid(predictions)
     predictions = (predictions > best_threshold).astype(int)
 
     test_df[labels] = predictions
-    test_df.drop(["text"], axis=1).to_csv("pred_sun_a.csv", index=False)
+    test_df.drop(["text"], axis=1).to_csv(output_dir / "pred_sun_a.csv", index=False)
 
 
 if __name__ == "__main__":
