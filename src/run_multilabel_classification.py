@@ -41,7 +41,7 @@ def main(args):
 
     labels = sorted(set(train_df.columns) - set(["id", "text"]))
     label2id = {l: i for i, l in enumerate(labels)}
-    id2label = {i: l for l, i in enumerate(labels)}
+    id2label = {i: l for i, l in enumerate(labels)}
     test_df.loc[:, labels] = 0
 
     dataset = DatasetDict(
@@ -119,6 +119,7 @@ def main(args):
     )
 
     trainer.train()
+    trainer.save_model()
     trainer.create_model_card()
 
     val_scores, *_ = trainer.predict(tokenized_dataset["validation"])
