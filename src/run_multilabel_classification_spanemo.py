@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
@@ -10,7 +11,7 @@ from sklearn.model_selection import train_test_split
 from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
-    AutoModelForSequenceClassification,
+    AutoModel,
     DataCollatorWithPadding,
     TrainingArguments,
     Trainer,
@@ -37,6 +38,53 @@ args.add_argument("--bf16", action="store_true")
 args.add_argument("--hub_model_id", type=str, default="LazarusNLP/NusaBERT-base-CASA")
 
 
+class SpanEmo(nn.Module):
+    def __init__(self, model_checkpoint, output_dropout=0.1, alpha=0.2):
+        super().__init__()
+        self.alpha = alpha
+        self.bert = AutoModel.from_pretrained(model_checkpoint)
+        self.config = self.bert.config
+        self.ffn = nn.Sequential(
+            nn.Linear(self.bert.config.hidden_size, self.bert.config.hidden_size),
+            nn.Tanh(),
+            nn.Dropout(p=output_dropout),
+            nn.Linear(self.bert.config.hidden_size, 1),
+        )
+
+    def forward(self, input_ids, token_type_ids, attention_mask, label_idxs, labels=None):
+        label_idxs = label_idxs[0].long()
+
+        last_hidden_state = self.bert(
+            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+        ).last_hidden_state
+        logits = self.ffn(last_hidden_state).squeeze(-1).index_select(dim=1, index=label_idxs)
+
+        if labels is not None:
+            bce_loss = F.binary_cross_entropy_with_logits(logits, labels.to(torch.float32))
+            corr_loss = self.corr_loss(logits, labels)
+            loss = ((1 - self.alpha) * bce_loss) + (self.alpha * corr_loss)
+            return {"loss": loss, "logits": logits}
+        else:
+            return {"logits": logits}
+
+    @staticmethod
+    def corr_loss(y_hat, y_true, reduction="mean"):
+        """
+        :param y_hat: model predictions, shape(batch, classes)
+        :param y_true: target labels (batch, classes)
+        :param reduction: whether to avg or sum loss
+        :return: loss
+        """
+        loss = torch.zeros(y_true.size(0)).to(y_true.device)
+        for idx, (y, y_h) in enumerate(zip(y_true, y_hat.sigmoid())):
+            y_z, y_o = (y == 0).nonzero(), y.nonzero()
+            if y_o.nelement() != 0:
+                output = torch.exp(torch.sub(y_h[y_z], y_h[y_o][:, None]).squeeze(-1)).sum()
+                num_comparisons = y_z.size(0) * y_o.size(0)
+                loss[idx] = output.div(num_comparisons)
+        return loss.mean() if reduction == "mean" else loss.sum()
+
+
 def main(args):
     train_df = pd.read_csv(args.train_file)
     train_df, val_df = train_test_split(train_df, test_size=0.1, random_state=42)
@@ -55,21 +103,18 @@ def main(args):
         }
     )
 
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_checkpoint,
-        problem_type="multi_label_classification",
-        num_labels=len(labels),
-        label2id=label2id,
-        id2label=id2label,
-    )
+    model = SpanEmo(args.model_checkpoint, alpha=args.alpha)
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
 
     def preprocess_function(example):
-        labels_str = "anger disgust fear joy sadness surprise"
+        label_names = "marah jijik takut gembira sedih terkejut"
         tokenized_input = tokenizer(
-            labels_str, example["text"], truncation=True, max_length=model.config.max_position_embeddings
+            label_names, example["text"], truncation=True, max_length=model.bert.config.max_position_embeddings
         )
         tokenized_input["labels"] = [float(example[label]) for label in labels]
+        tokenized_input["label_idxs"] = [
+            tokenizer.convert_ids_to_tokens(tokenized_input["input_ids"]).index(l) for l in label_names.split()
+        ]
         return tokenized_input
 
     tokenized_dataset = dataset.map(preprocess_function, remove_columns=dataset["train"].column_names)
@@ -108,45 +153,13 @@ def main(args):
         fp16=args.fp16,
         bf16=args.bf16,
         report_to="tensorboard",
+        label_names=["labels"],
         # push_to_hub=True,
         # hub_model_id=args.hub_model_id,
         # hub_private_repo=True,
     )
 
-    class SpanEmoTrainer(Trainer):
-        # modified from: https://github.com/hasanhuz/SpanEmo/blob/master/scripts/model.py
-        def __init__(self, alpha, **kwargs):
-            super().__init__(**kwargs)
-            self.alpha = alpha
-
-        def compute_loss(self, model, inputs, return_outputs=False):
-            labels = inputs.pop("labels")
-            outputs = model(**inputs)
-            logits = outputs.get("logits")
-
-            bce_loss = F.binary_cross_entropy_with_logits(logits, labels.to(torch.float32))
-            corr_loss = self.corr_loss(logits, labels)
-            loss = ((1 - self.alpha) * bce_loss) + (self.alpha * corr_loss)
-            return (loss, outputs) if return_outputs else loss
-
-        @staticmethod
-        def corr_loss(y_hat, y_true, reduction="mean"):
-            """
-            :param y_hat: model predictions, shape(batch, classes)
-            :param y_true: target labels (batch, classes)
-            :param reduction: whether to avg or sum loss
-            :return: loss
-            """
-            loss = torch.zeros(y_true.size(0)).to(model.device)
-            for idx, (y, y_h) in enumerate(zip(y_true, y_hat.sigmoid())):
-                y_z, y_o = (y == 0).nonzero(), y.nonzero()
-                if y_o.nelement() != 0:
-                    output = torch.exp(torch.sub(y_h[y_z], y_h[y_o][:, None]).squeeze(-1)).sum()
-                    num_comparisons = y_z.size(0) * y_o.size(0)
-                    loss[idx] = output.div(num_comparisons)
-            return loss.mean() if reduction == "mean" else loss.sum()
-
-    trainer = SpanEmoTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=tokenized_dataset["train"],
@@ -155,7 +168,6 @@ def main(args):
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         callbacks=callbacks,
-        alpha=args.alpha,
     )
 
     trainer.train()
