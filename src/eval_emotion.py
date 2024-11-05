@@ -1,13 +1,13 @@
-import json
 from argparse import ArgumentParser
 
 import torch
+import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 from datasets import Dataset
 from accelerate import Accelerator
 from peft import PeftConfig, PeftModel
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, GenerationConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 
 
@@ -16,18 +16,24 @@ def parse_args():
     parser.add_argument("--test_file", type=str, default="public_data/dev/track_a/sun_a.csv")
     parser.add_argument("--model_checkpoint", type=str, default="models/gemma2-9b-cpt-sea-lionv3-base-SemEval-sun")
     parser.add_argument("--apply_liger_kernel_to_gemma2", action="store_true")
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top_k", type=int, default=40)
-    parser.add_argument("--top_p", type=float, default=0.1)
-    parser.add_argument("--typical_p", type=float, default=1.0)
-    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--output_dir", type=str, default="models/")
     return parser.parse_args()
+
+
+def softmax(x):
+    z = x - max(x)
+    numerator = np.exp(z)
+    denominator = np.sum(numerator)
+    softmax = numerator / denominator
+    return softmax
 
 
 def main(args):
     model_id = args.model_checkpoint.split("/")[-1]
 
     test_df = pd.read_csv(args.test_file)
+    text2id = dict(zip(test_df["text"], test_df["id"]))
+
     test_df = pd.melt(test_df.drop(["id"], axis=1), id_vars=["text"], var_name="emotion", value_name="label")
 
     dataset = Dataset.from_pandas(test_df)
@@ -70,37 +76,35 @@ def main(args):
     model = PeftModel.from_pretrained(model, args.model_checkpoint)
     model.eval()
 
-    generation_config = GenerationConfig(
-        max_new_tokens=5,
-        min_new_tokens=None,
-        do_sample=True,
-        use_cache=True,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
-        temperature=args.temperature,
-        top_k=args.top_k,
-        top_p=args.top_p,
-        typical_p=args.typical_p,
-        repetition_penalty=args.repetition_penalty,
-        num_return_sequences=1,
-    )
+    choices = ["no", "yes"]
+    choice_ids = [tokenizer.encode(choice)[-1] for choice in choices]
 
     predictions = []
 
     for prompt in tqdm(dataset["prompt"]):
-        prompt_input_ids = tokenizer(prompt, return_tensors="pt").to(model.device)
-        prompt_token_length = prompt_input_ids.input_ids.shape[1]
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        input_ids = inputs["input_ids"]
 
         with torch.no_grad():
-            outputs = model.generate(**prompt_input_ids, generation_config=generation_config)
+            outputs = model(**inputs, labels=input_ids)
 
-        prediction = tokenizer.decode(outputs[0, prompt_token_length:], skip_special_tokens=True)
+        last_token_logits = outputs.logits[:, -1, :]
+        choice_logits = last_token_logits[:, choice_ids].detach().cpu().float().numpy()[0]
+        prediction = np.argmax(choice_logits)
         predictions.append(prediction)
 
-    result = {"model_id": model_id, "predictions": predictions}
+    # attach predictions
+    test_df["label"] = predictions
 
-    with open(f"results/{model_id}.json", "w") as f:
-        json.dump(result, f, indent=4)
+    # unmelt dataframe
+    test_df = test_df.pivot(index="text", columns="emotion", values="label").reset_index()
+    test_df["id"] = test_df["text"].map(text2id)
+
+    # sort by id
+    test_df = test_df.sort_values("id")
+    test_df = test_df[["id", "Anger", "Disgust", "Fear", "Joy", "Sadness", "Surprise"]]
+
+    test_df.to_csv(f"{args.output_dir}/{model_id}/pred_sun_a.csv", index=False)
 
 
 if __name__ == "__main__":
