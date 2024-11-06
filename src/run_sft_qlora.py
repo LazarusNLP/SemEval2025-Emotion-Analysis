@@ -108,6 +108,7 @@ def main(args):
     args = TrainingArguments(
         output_dir=output_dir,
         save_strategy="epoch",
+        eval_strategy="epoch",
         learning_rate=args.learning_rate,
         max_grad_norm=args.max_grad_norm,
         warmup_steps=args.warmup_steps,
