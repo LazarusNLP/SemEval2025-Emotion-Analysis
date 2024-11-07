@@ -1,6 +1,6 @@
-accelerate launch src/run_sft_qlora.py \
-    --model_checkpoint "aisingapore/gemma2-9b-cpt-sea-lionv3-base" \
-    --max_length 128 \
+accelerate launch src/run_sft_instruct_qlora.py \
+    --model_checkpoint "aisingapore/gemma2-9b-cpt-sea-lionv3-instruct" \
+    --max_length 256 \
     --batch_size 32 \
     --learning_rate 2e-4 \
     --max_grad_norm 1.0 \
