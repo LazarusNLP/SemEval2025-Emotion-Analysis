@@ -104,7 +104,8 @@ def main(args):
     test_df = test_df.sort_values("id")
     test_df = test_df[["id", "Anger", "Disgust", "Fear", "Joy", "Sadness", "Surprise"]]
 
-    test_df.to_csv(f"{args.output_dir}/{model_id}/pred_sun_a.csv", index=False)
+    pred_file_name = f"pred_{args.test_file.split('/')[-1]}"
+    test_df.to_csv(f"{args.output_dir}/{model_id}/{pred_file_name}", index=False)
 
 
 if __name__ == "__main__":

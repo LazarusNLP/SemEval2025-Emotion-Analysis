@@ -82,5 +82,4 @@ accelerate launch src/eval_emotion.py \
 - [x] SEA-LION-v3 SFT
 - [x] SEA-LION-v3-instruct SFT
 - [x] Gemma2-Sahabat-AI-v1 SFT
-- [ ] Merge track A and C data for Track A Sun
-- [ ] Cross-lingual transfer from Track A + C Sun to Track C Ind + Jav
+- [x] Cross-lingual transfer from Track A Sun to Track C Ind and Jav
