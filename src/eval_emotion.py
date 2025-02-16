@@ -39,7 +39,7 @@ def main(args):
     dataset = Dataset.from_pandas(test_df)
 
     def preprocess_function(example):
-        example["prompt"] = f"### Text: {example['text']}\n### Emotion: {example['emotion']}\n### Label: "
+        example["prompt"] = f"### Text: {example['text']}\n### Emotion: {example['emotion'].capitalize()}\n### Label: "
         return example
 
     dataset = dataset.map(preprocess_function, remove_columns=dataset.column_names)
@@ -102,9 +102,10 @@ def main(args):
 
     # sort by id
     test_df = test_df.sort_values("id")
-    test_df = test_df[["id", "Anger", "Disgust", "Fear", "Joy", "Sadness", "Surprise"]]
+    test_df = test_df[["id", "anger", "disgust", "fear", "joy", "sadness", "surprise"]]
 
-    test_df.to_csv(f"{args.output_dir}/{model_id}/pred_sun_a.csv", index=False)
+    pred_file_name = f"pred_{args.test_file.split('/')[-1]}"
+    test_df.to_csv(f"{args.output_dir}/{model_id}/{pred_file_name}", index=False)
 
 
 if __name__ == "__main__":

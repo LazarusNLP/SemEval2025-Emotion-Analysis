@@ -162,7 +162,7 @@ cython_debug/
 #.idea/
 
 .DS_Store
-public_data/
+public_data*/
 *.zip
 notebooks/pred*.csv
 models/
