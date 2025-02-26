@@ -26,7 +26,8 @@ accelerate launch run_sft_qlora.py \
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("--train_file", type=str, default="public_data/train/track_a/sun.csv")
+    parser.add_argument("--train_file", type=str, default="public_data_test/track_a/train/sun.csv")
+    parser.add_argument("--dev_file", type=str, default="public_data_test/track_a/dev/sun.csv")
     parser.add_argument("--model_checkpoint", type=str, default="aisingapore/gemma2-9b-cpt-sea-lionv3-base")
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -43,18 +44,16 @@ def main(args):
     model_id = f"{args.model_checkpoint.split('/')[-1]}-SemEval-sun"
 
     train_df = pd.read_csv(args.train_file)
-    train_df, val_df = train_test_split(train_df, test_size=0.1, random_state=42)
-    train_df = train_df.reset_index(drop=True)
-    val_df = val_df.reset_index(drop=True)
+    val_df = pd.read_csv(args.dev_file)
 
+    train_df = pd.concat([train_df, val_df], ignore_index=True)
     train_df = pd.melt(train_df.drop(["id"], axis=1), id_vars=["text"], var_name="emotion", value_name="label")
-    val_df = pd.melt(val_df.drop(["id"], axis=1), id_vars=["text"], var_name="emotion", value_name="label")
 
-    dataset = DatasetDict({"train": Dataset.from_pandas(train_df), "validation": Dataset.from_pandas(val_df)})
+    dataset = DatasetDict({"train": Dataset.from_pandas(train_df)})
 
     def preprocess_function(example):
         label = "yes" if example["label"] == 1 else "no"
-        example["prompt"] = f"### Text: {example['text']}\n### Emotion: {example['emotion']}\n### Label: {label}"
+        example["prompt"] = f"### Text: {example['text']}\n### Emotion: {example['emotion'].capitalize()}\n### Label: {label}"
         return example
 
     dataset = dataset.map(preprocess_function, remove_columns=dataset["train"].column_names)
@@ -108,7 +107,7 @@ def main(args):
     args = TrainingArguments(
         output_dir=output_dir,
         save_strategy="epoch",
-        eval_strategy="epoch",
+        eval_strategy="no",
         learning_rate=args.learning_rate,
         max_grad_norm=args.max_grad_norm,
         warmup_steps=args.warmup_steps,
@@ -127,7 +126,6 @@ def main(args):
         model=model,
         args=args,
         train_dataset=dataset["train"],
-        eval_dataset=dataset["validation"],
         dataset_text_field="prompt",
         max_seq_length=max_seq_length,
         data_collator=collator,
